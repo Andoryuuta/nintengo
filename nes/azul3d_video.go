@@ -3,14 +3,14 @@
 package nes
 
 import (
+	"azul3d.org/engine/gfx"
+	"azul3d.org/engine/gfx/camera"
+	"azul3d.org/engine/gfx/window"
+	"azul3d.org/engine/keyboard"
+	"azul3d.org/engine/lmath"
 	"image"
 	"image/color"
 	"math"
-
-	"azul3d.org/gfx.v1"
-	"azul3d.org/gfx/window.v2"
-	"azul3d.org/keyboard.v1"
-	"azul3d.org/lmath.v1"
 )
 
 var Azul3DPalette []color.RGBA = []color.RGBA{
@@ -178,7 +178,7 @@ void main() {
 }
 `)
 
-func (video *Azul3DVideo) handleInput(ev keyboard.StateEvent, w *window.Window) (running bool) {
+func (video *Azul3DVideo) handleInput(ev keyboard.ButtonEvent, w *window.Window) (running bool) {
 	var event Event
 
 	setSize := func(width, height int) {
@@ -291,29 +291,23 @@ func (video *Azul3DVideo) handleInput(ev keyboard.StateEvent, w *window.Window) 
 	}
 
 	return
+
 }
 
 func (video *Azul3DVideo) Run() {
 	colors := []uint8{}
 	running := true
 
-	gfxLoop := func(w window.Window, r gfx.Renderer) {
-		r.Clock().SetMaxFrameRate(video.fps)
-
+	gfxLoop := func(w window.Window, d gfx.Device) {
 		// Create a simple shader.
 		shader := gfx.NewShader("SimpleShader")
+		shader.GLSL = &gfx.GLSLSources{Vertex: glslVert, Fragment: glslFrag}
 
-		shader.GLSLVert = glslVert
-		shader.GLSLFrag = glslFrag
+		// Create a new orthograhpic camera
+		cam := camera.NewOrtho(d.Bounds())
 
-		// Setup a camera using an orthographic projection.
-		camera := gfx.NewCamera()
-		camNear := 0.01
-		camFar := 1000.0
-		camera.SetOrtho(r.Bounds(), camNear, camFar)
-
-		// Move the camera back two units away from the card.
-		camera.SetPos(lmath.Vec3{0, -2, 0})
+		// Move the camera two units back
+		cam.SetPos(lmath.Vec3{0, -2, 0})
 
 		// Create a card mesh.
 		cardMesh := gfx.NewMesh()
@@ -357,7 +351,8 @@ func (video *Azul3DVideo) Run() {
 
 		// Create a card object.
 		card := gfx.NewObject()
-
+		card.State = gfx.NewState()
+		card.AlphaMode = gfx.AlphaToCoverage
 		card.Shader = shader
 		card.Textures = []*gfx.Texture{nil, palette}
 		card.Meshes = []*gfx.Mesh{cardMesh}
@@ -401,26 +396,21 @@ func (video *Azul3DVideo) Run() {
 			tex.MagFilter = gfx.Nearest
 
 			onLoad := make(chan *gfx.Texture, 1)
-			r.LoadTexture(tex, onLoad)
+			d.LoadTexture(tex, onLoad)
 			<-onLoad
 
 			// Swap the texture with the old one on the card.
-			card.Lock()
 			card.Textures[0] = tex
-			card.Unlock()
 		}
 
 		updateTex()
 
 		go func() {
-			// Create an event mask for the events we are interested in.
-			evMask := window.KeyboardStateEvents
-
-			// Create a channel of events.
+			// Create a channel of events
 			events := make(chan window.Event, 256)
 
-			// Have the window notify our channel whenever events occur.
-			w.Notify(events, evMask)
+			// Have the window notify out channel whenever events occur.
+			w.Notify(events, window.KeyboardButtonEvents)
 
 			for running {
 				select {
@@ -439,44 +429,37 @@ func (video *Azul3DVideo) Run() {
 
 					// Update the texture using the most recent frame.
 					updateTex()
+				}
 
-				case e := <-events:
+				// Handle eaach pending event
+				window.Poll(events, func(e window.Event) {
 					switch ev := e.(type) {
-					case keyboard.StateEvent:
+					case keyboard.ButtonEvent:
 						running = video.handleInput(ev, &w)
 					}
-				}
+				})
 			}
 		}()
 
 		for running {
-			// Center the card in the window.
-			b := r.Bounds()
-			camera.SetOrtho(b, camNear, camFar)
+			// Center the card in the window
+			b := d.Bounds()
 			card.SetPos(lmath.Vec3{float64(b.Dx()) / 2.0, 0, float64(b.Dy()) / 2.0})
 
-			// Scale the card to fit the window, we divide by two because the
-			// card is two units wide.
-			var s float64
-			if b.Dy() > b.Dx() {
-				s = float64(b.Dx()) / 2.0
-			} else {
-				s = float64(b.Dy()) / 2.0
-			}
+			// Scale the card to fit the window
+			s := float64(b.Dy()) / 2.0
 			card.SetScale(lmath.Vec3{s, s, s})
 
 			// clear the entire area (empty rectangle means "the whole area").
-			r.Clear(image.Rect(0, 0, 0, 0), gfx.Color{0, 0, 0, 1})
-			r.ClearDepth(image.Rect(0, 0, 0, 0), 1.0)
+			d.Clear(d.Bounds(), gfx.Color{0, 0, 0, 1})
+			d.ClearDepth(d.Bounds(), 1.0)
 
-			// Draw the card to the screen.
-			r.Draw(image.Rect(0, 0, 0, 0), card, camera)
+			// Draw the textured card.
+			d.Draw(d.Bounds(), card, cam)
 
-			// Render the whole frame.
-			r.Render()
+			// Render the frame
+			d.Render()
 		}
-
-		w.Close()
 	}
 
 	props := window.NewProps()
